@@ -186,9 +186,14 @@ final class AppPreferences {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // AI post-processing (clean up the transcription with a local LLM via Ollama). Opt-in.
+    // AI post-processing (clean up the transcription with a local LLM). Opt-in.
     @UserDefault(key: "aiPostProcessingEnabled", defaultValue: false)
     var aiPostProcessingEnabled: Bool
+
+    /// Which LLM backend serves cleanup/formatting: "ollama" (external server) or "builtin"
+    /// (embedded llama.cpp). Defaults to "ollama" until the built-in model ships.
+    @UserDefault(key: "aiBackend", defaultValue: "ollama")
+    var aiBackend: String
 
     @UserDefault(key: "aiOllamaEndpoint", defaultValue: "http://localhost:11434")
     var aiOllamaEndpoint: String
