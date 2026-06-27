@@ -63,10 +63,11 @@ public final class LlamaContext {
 
     public typealias LlamaToken = Int32
 
-    // OpaquePointer wrappers over llama_model*, llama_context*, llama_sampler*.
+    // llama_model* and llama_context* are opaque in llama.h, so they import as OpaquePointer.
+    // llama_sampler is a complete struct, so it imports as UnsafeMutablePointer<llama_sampler>.
     private var model: OpaquePointer?
     private var ctx: OpaquePointer?
-    private var sampler: OpaquePointer?
+    private var sampler: UnsafeMutablePointer<llama_sampler>?
     private let vocab: OpaquePointer?
 
     // llama_backend_init() must be called once per process before loading any model.
@@ -117,7 +118,7 @@ public final class LlamaContext {
 
         // --- Build a greedy (temperature-0) sampler chain ---
         // For deterministic cleanup we want greedy decoding.
-        var samplerParams = llama_sampler_chain_default_params()
+        let samplerParams = llama_sampler_chain_default_params()
         guard let chain = llama_sampler_chain_init(samplerParams) else {
             print("LlamaContext: failed to init sampler chain")
             llama_free(createdCtx)
@@ -129,7 +130,6 @@ public final class LlamaContext {
         // Greedy = argmax. Deterministic, no temperature.
         llama_sampler_chain_add(chain, llama_sampler_init_greedy())
         self.sampler = chain
-        _ = samplerParams // silence unused-mutation warning if any
     }
 
     deinit {
@@ -151,7 +151,7 @@ public final class LlamaContext {
         // Keep the C strings alive for the duration of the llama_chat_apply_template call.
         return system.withCString { sysC -> String in
             user.withCString { usrC -> String in
-                var messages = [
+                let messages = [
                     llama_chat_message(role: strdup("system"), content: sysC),
                     llama_chat_message(role: strdup("user"), content: usrC),
                 ]

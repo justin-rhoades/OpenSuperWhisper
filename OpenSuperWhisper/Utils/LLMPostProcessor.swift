@@ -28,8 +28,8 @@ enum LLMPostProcessor {
     static func currentBackend() -> LLMCleanupBackend {
         let prefs = AppPreferences.shared
         switch prefs.aiBackend {
-        // "builtin" is wired up in the built-in-llama workstream; until its backend exists,
-        // selecting it falls through to Ollama so the call sites keep working.
+        case "builtin":
+            return BuiltInLlamaBackend.shared
         default:
             return OllamaBackend(endpoint: prefs.aiOllamaEndpoint, model: prefs.aiOllamaModel)
         }

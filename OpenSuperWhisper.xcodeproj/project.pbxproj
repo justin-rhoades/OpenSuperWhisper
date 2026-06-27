@@ -88,7 +88,7 @@
 			isa = PBXContainerItemProxy;
 			containerPortal = 840156402D79E87600FB5FFE /* libwhisper.xcodeproj */;
 			proxyType = 2;
-			remoteGlobalIDString = 02B3A7018D589A39EA5E482C;
+			remoteGlobalIDString = 602D06718EE64704BBF92480;
 			remoteInfo = llama;
 		};
 		CE57B03A2D52C7BC00929AF3 /* PBXContainerItemProxy */ = {
