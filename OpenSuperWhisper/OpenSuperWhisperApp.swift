@@ -42,7 +42,16 @@ struct OpenSuperWhisperApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 450, height: 650)
-        .windowResizability(.contentMinSize)
+        // NOTE: do NOT use .windowResizability(.contentMinSize) here. It makes
+        // SwiftUI's NSHostingView drive the window size from its content
+        // (updateAnimatedWindowSize), which fights the imperative AppKit geometry
+        // we set in AppDelegate (min/maxSize lock width to 450 and bound height
+        // 400–900, plus windowWillResize). The two authorities never agree on a
+        // fixed point, so windowDidLayout → updateAnimatedWindowSize → layout
+        // recurses until the stack overflows (EXC_BAD_ACCESS on resize, #11).
+        // .automatic leaves window sizing to AppKit, which already fully expresses
+        // the desired geometry.
+        .windowResizability(.automatic)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {
