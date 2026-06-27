@@ -122,6 +122,18 @@ class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var appContextFormattingEnabled: Bool {
+        didSet {
+            AppPreferences.shared.appContextFormattingEnabled = appContextFormattingEnabled
+        }
+    }
+
+    @Published var appContextProfiles: [AppContextProfile] {
+        didSet {
+            AppPreferences.shared.appContextProfiles = appContextProfiles
+        }
+    }
+
     @Published var useBeamSearch: Bool {
         didSet {
             AppPreferences.shared.useBeamSearch = useBeamSearch
@@ -214,6 +226,37 @@ class SettingsViewModel: ObservableObject {
     @Published var aiPostProcessingPrompt: String {
         didSet {
             AppPreferences.shared.aiPostProcessingPrompt = aiPostProcessingPrompt
+        }
+    }
+
+    /// Which LLM backend serves cleanup/formatting: "builtin" (embedded llama.cpp) or "ollama".
+    @Published var aiBackend: String {
+        didSet {
+            AppPreferences.shared.aiBackend = aiBackend
+        }
+    }
+
+    /// Whether the built-in model's GGUF is present on disk.
+    @Published var builtInModelDownloaded: Bool = LLMModelManager.shared.isDefaultModelDownloaded()
+    /// Download progress in 0...1 while the built-in model is downloading; nil when idle.
+    @Published var builtInModelDownloadProgress: Double?
+    /// Set when a built-in model download fails, for inline feedback.
+    @Published var builtInModelDownloadError: String?
+
+    /// Downloads the default built-in model (~1 GB), updating progress for the UI.
+    func downloadBuiltInModel() {
+        builtInModelDownloadError = nil
+        builtInModelDownloadProgress = 0
+        Task { @MainActor in
+            do {
+                try await LLMModelManager.shared.downloadDefaultModel { progress in
+                    Task { @MainActor in self.builtInModelDownloadProgress = progress }
+                }
+                self.builtInModelDownloaded = LLMModelManager.shared.isDefaultModelDownloaded()
+            } catch {
+                self.builtInModelDownloadError = error.localizedDescription
+            }
+            self.builtInModelDownloadProgress = nil
         }
     }
 
@@ -389,6 +432,8 @@ class SettingsViewModel: ObservableObject {
         self.initialPrompt = prefs.initialPrompt
         self.customDictionaryEnabled = prefs.customDictionaryEnabled
         self.customDictionaryEntries = prefs.customDictionaryEntries
+        self.appContextFormattingEnabled = prefs.appContextFormattingEnabled
+        self.appContextProfiles = prefs.appContextProfiles
         self.useBeamSearch = prefs.useBeamSearch
         self.beamSize = prefs.beamSize
         self.debugMode = prefs.debugMode
@@ -401,6 +446,7 @@ class SettingsViewModel: ObservableObject {
         self.holdToRecord = prefs.holdToRecord
         self.addSpaceAfterSentence = prefs.addSpaceAfterSentence
         self.aiPostProcessingEnabled = prefs.aiPostProcessingEnabled
+        self.aiBackend = prefs.aiBackend
         self.aiOllamaEndpoint = prefs.aiOllamaEndpoint
         self.aiOllamaModel = prefs.aiOllamaModel
         self.aiPostProcessingPrompt = prefs.aiPostProcessingPrompt
@@ -1446,9 +1492,9 @@ struct SettingsView: View {
                         .foregroundColor(.primary)
 
                     SettingRow(
-                        title: "Clean up with a local LLM (Ollama)",
+                        title: "Clean up with a local LLM",
                         caption: "Fix punctuation & obvious errors via a local model after transcribing.",
-                        info: "Sends the transcription to your local Ollama server and inserts the cleaned-up result. Requires Ollama running with the model below pulled (e.g. `ollama pull llama3.2`). Adds a little latency. If Ollama isn't reachable, the raw transcription is used unchanged — nothing is lost. Everything stays on your machine."
+                        info: "Sends the transcription to a local LLM and inserts the cleaned-up result. Use the built-in model (downloads once, runs fully on-device) or your own Ollama server. Adds a little latency. If the model isn't available, the raw transcription is used unchanged — nothing is lost. Everything stays on your machine."
                     ) {
                         Toggle("", isOn: $viewModel.aiPostProcessingEnabled)
                             .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
@@ -1456,6 +1502,36 @@ struct SettingsView: View {
                     }
 
                     if viewModel.aiPostProcessingEnabled {
+                        Picker("Backend", selection: $viewModel.aiBackend) {
+                            Text("Built-in (Qwen2.5 1.5B)").tag("builtin")
+                            Text("Ollama").tag("ollama")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 340)
+
+                        if viewModel.aiBackend == "builtin" {
+                            HStack(spacing: 8) {
+                                if viewModel.builtInModelDownloaded {
+                                    Label("Model ready — runs on-device", systemImage: "checkmark.circle.fill")
+                                        .font(.caption).foregroundColor(.green)
+                                } else if let progress = viewModel.builtInModelDownloadProgress {
+                                    ProgressView(value: progress).frame(width: 160)
+                                    Text("\(Int(progress * 100))%").font(.caption).foregroundColor(.secondary)
+                                } else {
+                                    Button("Download model (~1 GB)") { viewModel.downloadBuiltInModel() }
+                                        .controlSize(.small)
+                                    Text("Qwen2.5 1.5B, Apache-2.0. One-time download; no server needed.")
+                                        .font(.caption).foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                            }
+                            if let err = viewModel.builtInModelDownloadError {
+                                Label(err, systemImage: "xmark.circle.fill")
+                                    .font(.caption).foregroundColor(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } else {
                         HStack {
                             Text("Model")
                                 .font(.subheadline)
@@ -1505,6 +1581,7 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer()
+                        }
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
@@ -1640,11 +1717,14 @@ struct SettingsView: View {
 
                 // Custom Dictionary
                 customDictionarySection
+
+                // App-Aware Formatting
+                appContextSection
             }
             .padding()
         }
     }
-    
+
     private var customDictionarySection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -1709,6 +1789,86 @@ struct SettingsView: View {
                         viewModel.customDictionaryEntries.append(CustomDictionaryEntry())
                     }) {
                         Label("Add Word", systemImage: "plus.circle")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.top, 4)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor).opacity(0.3))
+        .cornerRadius(12)
+    }
+
+    private var appContextSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("App-Aware Formatting")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Spacer()
+                Toggle("", isOn: $viewModel.appContextFormattingEnabled)
+                    .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
+                    .labelsHidden()
+            }
+
+            Text("Reformat dictation per app via the local LLM — e.g. \"at Rob\" → \"@Rob\" in Slack. Matched by the frontmost app's bundle identifier. Requires AI Cleanup's model.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if viewModel.appContextFormattingEnabled {
+                VStack(alignment: .leading, spacing: 12) {
+                    if viewModel.appContextProfiles.isEmpty {
+                        Text("No apps yet. Add one below.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.vertical, 4)
+                    }
+
+                    ForEach($viewModel.appContextProfiles) { $profile in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                TextField("App name", text: $profile.appName, prompt: Text("Slack"))
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                                TextField("Bundle identifier", text: $profile.bundleIdentifier, prompt: Text("com.tinyspeck.slackmacgap"))
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                                Button(action: {
+                                    viewModel.appContextProfiles.removeAll { $0.id == profile.id }
+                                }) {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remove this app")
+                                .frame(width: 24)
+                            }
+
+                            TextEditor(text: $profile.instructions)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(height: 80)
+                                .padding(6)
+                                .background(Color(.textBackgroundColor))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                        .padding(.bottom, 4)
+                    }
+
+                    Button(action: {
+                        viewModel.appContextProfiles.append(
+                            AppContextProfile(bundleIdentifier: "", appName: "", instructions: ""))
+                    }) {
+                        Label("Add App", systemImage: "plus.circle")
                             .font(.subheadline)
                     }
                     .buttonStyle(.borderless)
