@@ -6,12 +6,39 @@ if [[ "$1" == "build" ]]; then
 fi
 
 # Patch FluidAudio's vocabulary rescorer to prefer longer matching spans
-# (keyword boosting quality, e.g. "My-Monkey" matched as one term). Idempotent;
-# fails loudly if the target moved (so a FluidAudio bump can't silently skip it).
+# (keyword boosting quality, e.g. "My-Monkey" matched as one term), and mark
+# AsrManager as @unchecked Sendable so the pinned 0.11.0 checkout compiles under
+# the Swift 6.3+ toolchain (the actor already accesses it via nonisolated(unsafe),
+# so this asserts no guarantee the author wasn't already relying on). Idempotent;
+# fails loudly if a target moved (so a FluidAudio bump can't silently skip it).
 apply_fluidaudio_patches() {
     local checkout="SourcePackages/checkouts/FluidAudio"
-    local patch_file="patches/fluidaudio-vocabulary-rescorer.patch"
-    local target="$checkout/Sources/FluidAudio/ASR/CustomVocabulary/Rescorer/VocabularyRescorer+TokenRescoring.swift"
+
+    if [[ ! -d "$checkout" ]]; then
+        echo "Missing FluidAudio source checkout: $checkout"
+        exit 1
+    fi
+
+    # name | patch file | target file (relative to checkout) | sentinel grep
+    apply_one_patch \
+        "vocabulary rescorer" \
+        "patches/fluidaudio-vocabulary-rescorer.patch" \
+        "$checkout/Sources/FluidAudio/ASR/CustomVocabulary/Rescorer/VocabularyRescorer+TokenRescoring.swift" \
+        "wordTimings.count >= spanLength"
+
+    apply_one_patch \
+        "AsrManager Sendable" \
+        "patches/fluidaudio-asrmanager-sendable.patch" \
+        "$checkout/Sources/FluidAudio/ASR/AsrManager.swift" \
+        "public final class AsrManager: @unchecked Sendable"
+}
+
+# apply_one_patch <name> <patch_file> <target> <sentinel>
+# Applies a -p1 patch into the FluidAudio checkout, idempotently. The sentinel is
+# a string that is present iff the patch is already applied.
+apply_one_patch() {
+    local name="$1" patch_file="$2" target="$3" sentinel="$4"
+    local checkout="SourcePackages/checkouts/FluidAudio"
 
     if [[ ! -f "$patch_file" ]]; then
         echo "Missing FluidAudio patch: $patch_file"
@@ -23,15 +50,15 @@ apply_fluidaudio_patches() {
         exit 1
     fi
 
-    if grep -q "Prefer longer spans" "$target" && grep -q "wordTimings.count >= spanLength" "$target"; then
-        echo "FluidAudio vocabulary rescorer patch already applied."
+    if grep -qF "$sentinel" "$target"; then
+        echo "FluidAudio $name patch already applied."
         return
     fi
 
-    echo "Applying FluidAudio vocabulary rescorer patch..."
+    echo "Applying FluidAudio $name patch..."
     patch --silent --forward -d "$checkout" -p1 < "$patch_file"
-    if [[ $? -ne 0 ]] && { ! grep -q "Prefer longer spans" "$target" || ! grep -q "wordTimings.count >= spanLength" "$target"; }; then
-        echo "Failed to apply FluidAudio vocabulary rescorer patch."
+    if [[ $? -ne 0 ]] && ! grep -qF "$sentinel" "$target"; then
+        echo "Failed to apply FluidAudio $name patch."
         exit 1
     fi
 }
@@ -58,7 +85,11 @@ if [[ $? -ne 0 ]]; then
 fi
 
 echo "Copying libomp.dylib..."
-cp /opt/homebrew/opt/libomp/lib/libomp.dylib ./build/libomp.dylib
+# Homebrew's libomp.dylib is read-only (0444); -f unlinks any read-only
+# destination from a prior build, and chmod makes the copy writable so the
+# install_name_tool / codesign steps below can modify it cleanly.
+cp -f /opt/homebrew/opt/libomp/lib/libomp.dylib ./build/libomp.dylib
+chmod u+w ./build/libomp.dylib
 install_name_tool -id "@rpath/libomp.dylib" ./build/libomp.dylib
 codesign --force --sign - ./build/libomp.dylib
 
