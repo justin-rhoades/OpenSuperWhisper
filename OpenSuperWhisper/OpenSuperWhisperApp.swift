@@ -36,22 +36,30 @@ struct OpenSuperWhisperApp: App {
                     ContentView()
                 }
             }
+            // SwiftUI is the SOLE window-sizing authority. The desired geometry —
+            // fixed 450 width, user-resizable height clamped to 400–900 — is
+            // expressed entirely by this content frame plus
+            // .windowResizability(.contentSize) below, which maps the content's
+            // min/max size onto the window's min/max size.
+            //
+            // Do NOT also drive the window imperatively from AppKit (min/maxSize,
+            // windowWillResize). SwiftUI's NSHostingView installs a windowDidLayout
+            // observer that calls updateAnimatedWindowSize to size the window from
+            // its content; if AppKit overrides that size, the override re-dirties
+            // layout, which re-fires updateAnimatedWindowSize, and the two
+            // authorities never reach a fixed point — windowDidLayout →
+            // updateAnimatedWindowSize → layout recurses until the main thread
+            // blows its stack (EXC_BAD_ACCESS "excessive recursion", #11). Switching
+            // resizability (#11) or making the content fill did NOT fix it because
+            // updateAnimatedWindowSize fires regardless; the only fix is to leave
+            // exactly one authority. AppKit's geometry code has been removed.
             .frame(width: 450)
             .frame(minHeight: 400, maxHeight: 900)
             .environmentObject(appState)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 450, height: 650)
-        // NOTE: do NOT use .windowResizability(.contentMinSize) here. It makes
-        // SwiftUI's NSHostingView drive the window size from its content
-        // (updateAnimatedWindowSize), which fights the imperative AppKit geometry
-        // we set in AppDelegate (min/maxSize lock width to 450 and bound height
-        // 400–900, plus windowWillResize). The two authorities never agree on a
-        // fixed point, so windowDidLayout → updateAnimatedWindowSize → layout
-        // recurses until the stack overflows (EXC_BAD_ACCESS on resize, #11).
-        // .automatic leaves window sizing to AppKit, which already fully expresses
-        // the desired geometry.
-        .windowResizability(.automatic)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {
@@ -129,8 +137,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self.mainWindow = window
             window.delegate = self
 
-            window.minSize = NSSize(width: 450, height: 400)
-            window.maxSize = NSSize(width: 450, height: 900)
+            // NOTE: window size is owned entirely by SwiftUI via
+            // .windowResizability(.contentSize) + the content frame (450 wide,
+            // 400–900 tall). Do NOT set minSize/maxSize or implement
+            // windowWillResize here — a second sizing authority fights SwiftUI's
+            // updateAnimatedWindowSize and recurses into a stack overflow (#11).
 
             // Start in the menu bar only (don't show the main window) when requested.
             // Never hide during onboarding — the user needs the window to finish setup.
@@ -428,8 +439,9 @@ extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
     }
-    
-    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        return NSSize(width: 450, height: frameSize.height)
-    }
+
+    // windowWillResize was intentionally removed: pinning the width here created a
+    // second sizing authority that fought SwiftUI's updateAnimatedWindowSize and
+    // recursed into a stack overflow (#11). Width is now fixed by the SwiftUI
+    // content frame (450) under .windowResizability(.contentSize).
 }

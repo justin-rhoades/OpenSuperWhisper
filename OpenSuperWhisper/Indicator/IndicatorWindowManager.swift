@@ -5,9 +5,11 @@ import SwiftUI
 @MainActor
 class IndicatorWindowManager: IndicatorViewDelegate {
     static let shared = IndicatorWindowManager()
-    
+
     var window: NSWindow?
     var viewModel: IndicatorViewModel?
+    // Retained so hide() can clear sizingOptions before the exit animation (see below).
+    private var hostingController: NSHostingController<IndicatorWindow>?
 
     // The window auto-sizes to its content (so the live caption pill grows with the text).
     // We keep the bottom edge anchored near the caret so it grows upward, not over the caret.
@@ -17,18 +19,28 @@ class IndicatorWindowManager: IndicatorViewDelegate {
     private var anchorFromTop = false
     private var anchorTopY: CGFloat = 0
     private var resizeObserver: NSObjectProtocol?
+    // True while a deferred reposition is pending (set before the async dispatch, cleared in its
+    // defer). NOT "currently repositioning" — it marks that one reposition is already scheduled
+    // for the next runloop, so a nested didResizeNotification during the same burst is a no-op.
+    // Recursion-guard backstop: bounds reposition to one in-flight pass even if layout scheduling
+    // shifts (macOS 26/Tahoe).
+    private var isRepositionPending = false
+    // One-shot: if the guard above ever drops a nested call, log it ONCE. A trip means a
+    // residual layout loop is being coalesced — the only in-the-field signal that the guard is
+    // doing work (the async dispatch alone wasn't enough).
+    private var hasLoggedRepositionPendingTrip = false
 
     private init() {}
-    
+
     func show(nearPoint point: NSPoint? = nil) -> IndicatorViewModel {
-        
+
         KeyboardShortcuts.enable(.escape)
-        
+
         // Create new view model
         let newViewModel = IndicatorViewModel()
         newViewModel.delegate = self
         viewModel = newViewModel
-        
+
         if window == nil {
             // Create window if it doesn't exist - using NSPanel for full-screen compatibility
             let panel = NSPanel(
@@ -37,21 +49,22 @@ class IndicatorWindowManager: IndicatorViewDelegate {
                 backing: .buffered,
                 defer: false
             )
-            
+
             panel.isFloatingPanel = true
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = false
             panel.ignoresMouseEvents = true
             panel.hidesOnDeactivate = false
-            
+
             self.window = panel
         }
-        
+
         // Host with a controller that resizes the window to fit the SwiftUI content.
-        let hostingController = NSHostingController(rootView: IndicatorWindow(viewModel: newViewModel))
-        hostingController.sizingOptions = [.preferredContentSize]
-        window?.contentViewController = hostingController
+        let hc = NSHostingController(rootView: IndicatorWindow(viewModel: newViewModel))
+        hc.sizingOptions = [.preferredContentSize]
+        hostingController = hc
+        window?.contentViewController = hc
 
         // Position window - use the screen containing the point, or main screen as fallback
         let targetScreen = point.flatMap { FocusUtils.screenContaining(point: $0) } ?? NSScreen.main
@@ -87,14 +100,19 @@ class IndicatorWindowManager: IndicatorViewDelegate {
 
             reposition(window: window, screen: screen)
 
-            // Keep the bottom edge anchored as the content (and window) grows upward.
-            if resizeObserver == nil {
-                resizeObserver = NotificationCenter.default.addObserver(
-                    forName: NSWindow.didResizeNotification, object: window, queue: .main
-                ) { [weak self, weak window] _ in
-                    guard let self, let window, let screen = window.screen ?? NSScreen.main else { return }
-                    self.reposition(window: window, screen: screen)
-                }
+            // Re-anchor the bottom/top edge as the content (and window) resizes.
+            // Added fresh on every show() and removed in hide() (see teardown) so the
+            // observer's lifecycle is symmetric with the window's visibility — it never
+            // lingers across show/hide cycles. A lingering observer firing reposition()
+            // during the stop-time settle storm is part of the #11 crash chain.
+            resizeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification, object: window, queue: .main
+            ) { [weak self, weak window] _ in
+                guard let self, let window, let screen = window.screen ?? NSScreen.main else { return }
+                // Re-anchor asynchronously so setFrameOrigin never runs inside the in-flight
+                // layout pass that posted this didResizeNotification — synchronous frame
+                // mutation mid-layout is the #11 re-entrancy that overflowed the stack.
+                self.scheduleReposition(window: window, screen: screen)
             }
         }
 
@@ -114,6 +132,27 @@ class IndicatorWindowManager: IndicatorViewDelegate {
 
         window?.orderFront(nil)
         return newViewModel
+    }
+
+    /// Coalesces re-anchoring to the next runloop turn so `setFrameOrigin` never executes
+    /// inside the layout pass that posted `didResizeNotification`. A burst of resizes (e.g. the
+    /// stop-time settle storm) collapses to a single deferred `reposition` once layout settles,
+    /// and `isRepositionPending` bounds reposition to one in-flight pass — no synchronous re-entry.
+    private func scheduleReposition(window: NSWindow, screen: NSScreen) {
+        guard !isRepositionPending else {
+            if !hasLoggedRepositionPendingTrip {
+                hasLoggedRepositionPendingTrip = true
+                Diag.log.fault("Indicator reposition recursion-guard tripped — nested layout re-entry coalesced (#11)")
+            }
+            return
+        }
+        isRepositionPending = true
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self else { return }
+            defer { self.isRepositionPending = false }
+            guard let window, let resolvedScreen = window.screen ?? screen ?? NSScreen.main else { return }
+            self.reposition(window: window, screen: resolvedScreen)
+        }
     }
 
     private func reposition(window: NSWindow, screen: NSScreen) {
@@ -143,7 +182,7 @@ class IndicatorWindowManager: IndicatorViewDelegate {
     func stopRecording() {
         viewModel?.startDecoding()
     }
-    
+
     func stopForce() {
         viewModel?.cancelRecording()
         viewModel?.cleanup()
@@ -152,21 +191,38 @@ class IndicatorWindowManager: IndicatorViewDelegate {
 
     func hide() {
         KeyboardShortcuts.disable(.escape)
-        
+
+        // Tear down the resize observer and freeze window sizing BEFORE the hide animation.
+        //
+        // At stop-time, three SwiftUI animations fire simultaneously (isVisible spring,
+        // scaleEffect/opacity settle, bubbleWidth collapse). With sizingOptions=[.preferredContentSize]
+        // still active, each animation frame drives updateAnimatedWindowSize → _setFrameCommon →
+        // layout → SwiftUI calls setFrameOrigin on the NSVisualEffectView backing Material.thinMaterial
+        // → NSISEngine._coreReplaceMarker recurses into a stack overflow (#11, macOS 26 path).
+        //
+        // Clearing sizingOptions stops updateAnimatedWindowSize from resizing the window during the
+        // animation; the fade/scale/offset play at the window's current size and the crash is avoided.
+        if let resizeObserver {
+            NotificationCenter.default.removeObserver(resizeObserver)
+            self.resizeObserver = nil
+        }
+        hostingController?.sizingOptions = []
+        hostingController = nil
+
         Task {
             guard let viewModel = self.viewModel else { return }
-            
+
             await viewModel.hideWithAnimation()
             viewModel.cleanup()
-            
+
             self.window?.contentView = nil
             self.window?.orderOut(nil)
             self.viewModel = nil
-            
+
             NotificationCenter.default.post(name: .indicatorWindowDidHide, object: nil)
         }
     }
-    
+
     func didFinishDecoding() {
         hide()
     }

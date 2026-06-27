@@ -287,20 +287,42 @@ class IndicatorViewModel: ObservableObject {
             // check can't read (Messages, Electron), and is a harmless no-op otherwise (the text
             // is on the clipboard). So no editable-target gate — it only ever produces false
             // negatives that wrongly suppress a valid paste (#paste-messages).
-            if !prefs.autoCopyToClipboard { ClipboardUtil.copyToClipboard(finalText) }
+            if !prefs.autoCopyToClipboard {
+                // User didn't opt into keeping the transcription on the clipboard, so save what's
+                // there now and restore it after the paste lands (~2 s is enough for any app to
+                // process ⌘V). The restore is skipped if the user manually copies something else
+                // in that window, so their clipboard is never clobbered either way.
+                let saved = ClipboardUtil.snapshot()
+                ClipboardUtil.copyToClipboard(finalText)
+                Task.detached {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    ClipboardUtil.restore(saved, ifClipboardContains: finalText)
+                }
+            }
             Diag.measure("TextInserter.paste") { TextInserter.paste() }
             return false
         }
 
         // Typing mode: synthetic keystrokes go wherever focus is, so only type when we're
-        // confident there's an editable target; otherwise stash on the clipboard and notify ⌘V.
+        // confident there's an editable target. When the AX check can't confirm one (common
+        // in Electron and Messages), fall back to ⌘V paste — which works universally — and
+        // restore the clipboard afterward so the user's previous copy isn't clobbered.
         let targetMissing = prefs.notifyWhenNoPasteTarget
             && Diag.measure("focusedElementIsEditable") { FocusUtils.focusedElementIsEditable() } == false
         if targetMissing {
-            if !prefs.autoCopyToClipboard {
+            if prefs.autoCopyToClipboard {
+                // Text already on clipboard from the stash at the top; just paste.
+                Diag.measure("TextInserter.paste") { TextInserter.paste() }
+            } else {
+                let saved = ClipboardUtil.snapshot()
                 ClipboardUtil.copyToClipboard(finalText)
+                Diag.measure("TextInserter.paste") { TextInserter.paste() }
+                Task.detached {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    ClipboardUtil.restore(saved, ifClipboardContains: finalText)
+                }
             }
-            return true
+            return false
         }
         Diag.measure("TextInserter.type") { TextInserter.type(finalText) }
         return false

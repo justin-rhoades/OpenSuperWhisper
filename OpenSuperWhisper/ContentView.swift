@@ -664,7 +664,7 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(minWidth: 400, idealWidth: 400)
+        .frame(minWidth: 450)
         .background(ThemePalette.windowBackground(colorScheme))
         .onAppear {
             viewModel.loadInitialData()
