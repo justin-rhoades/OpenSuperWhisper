@@ -326,6 +326,18 @@ class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var voiceCommandsEnabled: Bool {
+        didSet {
+            AppPreferences.shared.voiceCommandsEnabled = voiceCommandsEnabled
+        }
+    }
+
+    @Published var voiceCommandTrigger: String {
+        didSet {
+            AppPreferences.shared.voiceCommandTrigger = voiceCommandTrigger
+        }
+    }
+
     @Published var pauseMediaOnRecord: Bool {
         didSet {
             AppPreferences.shared.pauseMediaOnRecord = pauseMediaOnRecord
@@ -459,6 +471,8 @@ class SettingsViewModel: ObservableObject {
         self.pasteInsteadOfTyping = prefs.pasteInsteadOfTyping
         self.notifyWhenNoPasteTarget = prefs.notifyWhenNoPasteTarget
         self.submitOnVoiceCommand = prefs.submitOnVoiceCommand
+        self.voiceCommandsEnabled = prefs.voiceCommandsEnabled
+        self.voiceCommandTrigger = prefs.voiceCommandTrigger
         self.pauseMediaOnRecord = prefs.pauseMediaOnRecord
         self.reduceVolumeOnRecord = prefs.reduceVolumeOnRecord
         self.reduceVolumeLevel = prefs.reduceVolumeLevel
@@ -1725,9 +1739,45 @@ struct SettingsView: View {
 
                 // App-Aware Formatting
                 appContextSection
+
+                // Voice Commands
+                voiceCommandsSection
             }
             .padding()
         }
+    }
+
+    private var voiceCommandsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Voice Commands")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Spacer()
+                Toggle("", isOn: $viewModel.voiceCommandsEnabled)
+                    .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
+                    .labelsHidden()
+            }
+
+            Text("Start a dictation with a trigger word to run a command instead of typing it — e.g. \"\(viewModel.voiceCommandTrigger) open Slack\" opens or focuses Slack. Try open / switch to / quit + an app name.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if viewModel.voiceCommandsEnabled {
+                HStack {
+                    Text("Trigger word")
+                        .font(.subheadline)
+                    Spacer()
+                    TextField("whisper", text: $viewModel.voiceCommandTrigger)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor).opacity(0.3))
+        .cornerRadius(12)
     }
 
     private var customDictionarySection: some View {

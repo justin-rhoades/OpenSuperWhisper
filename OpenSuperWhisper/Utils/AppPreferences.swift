@@ -266,21 +266,20 @@ final class AppPreferences {
     @UserDefault(key: "submitOnVoiceCommand", defaultValue: false)
     var submitOnVoiceCommand: Bool
 
-    /// Detects a trailing "press enter" voice command. Returns the text with the command (and any
-    /// trailing punctuation it leaves behind) removed, plus whether the command was present.
-    ///
-    /// Only matches at the very end of the dictation, so "press enter" used mid-sentence as content
-    /// ("tell him to press enter") is left untouched. The leading separator we consume is whitespace
-    /// or a comma — a preceding sentence period ("Send this. Press enter.") is kept. No-op (returns
-    /// the text unchanged with `submit: false`) unless `submitOnVoiceCommand` is on.
+    /// Voice commands: a leading trigger word ("whisper open slack") performs an action instead of
+    /// being typed. Opt-in. See `VoiceCommandRouter`.
+    @UserDefault(key: "voiceCommandsEnabled", defaultValue: false)
+    var voiceCommandsEnabled: Bool
+
+    /// The wake word that marks an utterance as a command. Default "whisper".
+    @UserDefault(key: "voiceCommandTrigger", defaultValue: "whisper")
+    var voiceCommandTrigger: String
+
+    /// Detects a trailing "press enter" voice command (parse lives in `VoiceCommandRouter`).
+    /// No-op (returns the text unchanged with `submit: false`) unless `submitOnVoiceCommand` is on.
     func stripSubmitCommand(_ text: String) -> (text: String, submit: Bool) {
         guard submitOnVoiceCommand else { return (text, false) }
-        let pattern = "[\\s,]*press[\\s,]+enter[\\s\\p{P}]*$"
-        guard let range = text.range(
-            of: pattern, options: [.regularExpression, .caseInsensitive]) else {
-            return (text, false)
-        }
-        return (String(text[..<range.lowerBound]), true)
+        return VoiceCommandRouter.parseSubmitCommand(text)
     }
 
     /// Pause currently-playing media while recording, then resume. Opt-in (default
