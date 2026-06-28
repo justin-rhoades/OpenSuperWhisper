@@ -26,10 +26,13 @@ enum InstalledApps {
         var seen = Set<String>()
         var result: [InstalledApp] = []
         for root in searchRoots {
-            let items = (try? FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles])) ?? []
-            for url in items where url.pathExtension == "app" {
+            // Path-based enumeration on purpose: the URL-based `contentsOfDirectory(at:)` silently
+            // drops symlinks into the macOS Cryptex (e.g. /Applications/Safari.app →
+            // ../System/Cryptexes/…), which would omit Safari and other sealed system apps. The
+            // path variant lists the symlink; `Bundle(url:)` then resolves it to the real bundle.
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+            for name in names where name.hasSuffix(".app") {
+                let url = root.appendingPathComponent(name)
                 guard let app = app(at: url), !seen.contains(app.bundleIdentifier) else { continue }
                 seen.insert(app.bundleIdentifier)
                 result.append(app)
