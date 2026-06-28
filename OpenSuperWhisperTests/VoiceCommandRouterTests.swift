@@ -54,6 +54,14 @@ final class VoiceCommandRouterTests: XCTestCase {
         XCTAssertNil(VoiceCommandRouter.parseAppCommand("open"))
     }
 
+    func testParseStripsTrailingPunctuationFromSpeech() {
+        // Whisper appends a period to short utterances ("open safari." → query "safari").
+        XCTAssertEqual(VoiceCommandRouter.parseAppCommand("open safari."),
+                       .init(action: .activate, query: "safari"))
+        XCTAssertEqual(VoiceCommandRouter.parseAppCommand("switch to visual studio code."),
+                       .init(action: .activate, query: "visual studio code"))
+    }
+
     // MARK: - classify
 
     func testClassifyDictationWhenNoTrigger() {
@@ -102,5 +110,9 @@ final class VoiceCommandRouterTests: XCTestCase {
 
     func testBestMatchNone() {
         XCTAssertNil(InstalledApps.bestMatch(forSpokenName: "photoshop", in: apps))
+    }
+
+    func testBestMatchIgnoresTrailingPunctuation() {
+        XCTAssertEqual(InstalledApps.bestMatch(forSpokenName: "slack.", in: apps)?.name, "Slack")
     }
 }

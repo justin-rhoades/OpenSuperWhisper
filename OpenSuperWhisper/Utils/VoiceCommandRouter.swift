@@ -71,7 +71,10 @@ enum VoiceCommandRouter {
         guard let range = text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) else {
             return nil
         }
-        let app = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        // Trim surrounding whitespace AND punctuation: speech-to-text appends a period to short
+        // utterances ("open safari." → "safari."), which would otherwise break the app match.
+        let app = String(text[range.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return app.isEmpty ? nil : app
     }
 
