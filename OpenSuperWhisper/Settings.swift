@@ -956,6 +956,11 @@ struct SettingsView: View {
     @State private var langNeedsRelaunch = false
     @State private var cancelKey = "esc"
 
+    // App-aware formatting: app picker sheet. `appPickerTargetID` is the profile being (re)assigned
+    // an app, or nil when the picker is adding a brand-new profile.
+    @State private var showingAppPicker = false
+    @State private var appPickerTargetID: UUID?
+
     /// Curated cancel-recording keys (the recorder can't capture Esc / single special keys).
     struct CancelKeyChoice: Identifiable {
         let id: String
@@ -1815,7 +1820,7 @@ struct SettingsView: View {
                     .labelsHidden()
             }
 
-            Text("Reformat dictation per app via the local LLM — e.g. \"at Rob\" → \"@Rob\" in Slack. Matched by the frontmost app's bundle identifier. Requires AI Cleanup's model.")
+            Text("Reformat dictation per app via the local LLM — e.g. \"at Rob\" → \"@Rob\" in Slack. Pick an app and describe how it should format your text. Requires AI Cleanup's model.")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -1830,15 +1835,34 @@ struct SettingsView: View {
 
                     ForEach($viewModel.appContextProfiles) { $profile in
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                TextField("App name", text: $profile.appName, prompt: Text("Slack"))
-                                    .labelsHidden()
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
-                                TextField("Bundle identifier", text: $profile.bundleIdentifier, prompt: Text("com.tinyspeck.slackmacgap"))
-                                    .labelsHidden()
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
+                            HStack(spacing: 10) {
+                                Button {
+                                    appPickerTargetID = profile.id
+                                    showingAppPicker = true
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(nsImage: InstalledApps.icon(forBundleIdentifier: profile.bundleIdentifier))
+                                            .resizable()
+                                            .frame(width: 24, height: 24)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(profile.appName.isEmpty ? "Choose an app…" : profile.appName)
+                                                .foregroundColor(profile.appName.isEmpty ? .secondary : .primary)
+                                            if !profile.bundleIdentifier.isEmpty {
+                                                Text(profile.bundleIdentifier)
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Change the app")
+
                                 Button(action: {
                                     viewModel.appContextProfiles.removeAll { $0.id == profile.id }
                                 }) {
@@ -1850,23 +1874,33 @@ struct SettingsView: View {
                                 .frame(width: 24)
                             }
 
-                            TextEditor(text: $profile.instructions)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(height: 80)
-                                .padding(6)
-                                .background(Color(.textBackgroundColor))
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                )
+                            ZStack(alignment: .topLeading) {
+                                TextEditor(text: $profile.instructions)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(height: 80)
+                                    .padding(6)
+                                    .background(Color(.textBackgroundColor))
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                    )
+                                if profile.instructions.isEmpty {
+                                    Text("Formatting rules for this app — e.g. Convert spoken \"at Rob\" to \"@Rob\".")
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal, 11)
+                                        .padding(.vertical, 14)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                         }
                         .padding(.bottom, 4)
                     }
 
                     Button(action: {
-                        viewModel.appContextProfiles.append(
-                            AppContextProfile(bundleIdentifier: "", appName: "", instructions: ""))
+                        appPickerTargetID = nil
+                        showingAppPicker = true
                     }) {
                         Label("Add App", systemImage: "plus.circle")
                             .font(.subheadline)
@@ -1881,6 +1915,22 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.controlBackgroundColor).opacity(0.3))
         .cornerRadius(12)
+        .sheet(isPresented: $showingAppPicker) {
+            AppPickerSheet { app in applyPickedApp(app) }
+        }
+    }
+
+    /// Applies the app chosen in the picker: reassigns the targeted profile, or appends a new one.
+    private func applyPickedApp(_ app: InstalledApp) {
+        if let targetID = appPickerTargetID,
+           let idx = viewModel.appContextProfiles.firstIndex(where: { $0.id == targetID }) {
+            viewModel.appContextProfiles[idx].appName = app.name
+            viewModel.appContextProfiles[idx].bundleIdentifier = app.bundleIdentifier
+        } else {
+            viewModel.appContextProfiles.append(
+                AppContextProfile(bundleIdentifier: app.bundleIdentifier, appName: app.name, instructions: ""))
+        }
+        appPickerTargetID = nil
     }
 
     private var storageSettings: some View {
